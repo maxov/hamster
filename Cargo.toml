@@ -1,0 +1,7 @@
+[package]
+name = "hamster"
+version = "0.1.0"
+authors = ["Max Ovsiankin"]
+edition = "2018"
+
+[dependencies]
