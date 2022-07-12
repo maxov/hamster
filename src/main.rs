@@ -13,6 +13,7 @@ pub fn main() {
     //   }
     // }
   }
+  dbg!(&a);
   for k in 1..7 {
     println!("key: {} value: {}", k, a.get(k).unwrap());
   }

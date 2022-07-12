@@ -1,8 +1,10 @@
+use std::fmt;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 /// Implementation of a Hash Array Mapped Trie in Rst.
+#[derive(Debug)]
 pub struct HAMT {
   root: HAMTNode
 }
@@ -25,7 +27,20 @@ fn get_entries_index(presence_map: u32, index: u32) -> usize {
   }
 }
 
-fn set_node(node: &HAMTNode, cur_key: u64, value: i32) -> HAMTNode {
+fn set_chained(vec: &Vec<(u64, i32)>, key: u64, value: i32) -> Vec<(u64, i32)> {
+  let mut new_vec = vec.to_vec();
+  for i in new_vec.iter_mut() {
+    let (k, v) = *i;
+    if k == key {
+      *i = (k, v);
+      return new_vec;
+    }
+  }
+  new_vec.insert(0, (key, value));
+  return new_vec;
+}
+
+fn set_node(node: &HAMTNode, key: u64, cur_key: u64, value: i32, level: u32) -> HAMTNode {
   let most_sig = ((cur_key & MOST_SIG) >> 59) as u32;
   let key_present = (node.presence_map >> most_sig) & 1;
   let entries_index = get_entries_index(node.presence_map, most_sig);
@@ -34,7 +49,7 @@ fn set_node(node: &HAMTNode, cur_key: u64, value: i32) -> HAMTNode {
 
     new_entries.insert(
       entries_index, 
-      HAMTNodeEntry::Value(value)
+      HAMTNodeEntry::Value(key, value)
     );
     return HAMTNode {
       presence_map: node.presence_map | (1 << most_sig),
@@ -43,9 +58,30 @@ fn set_node(node: &HAMTNode, cur_key: u64, value: i32) -> HAMTNode {
   } else {
     let entry = &node.entries[entries_index];
     match entry {
-      HAMTNodeEntry::Value(_) => {
+      HAMTNodeEntry::Value(other_key, other_value) => {
+        if other_key == &key {
+          let mut new_entries = node.entries.to_vec();
+          new_entries[entries_index] = HAMTNodeEntry::Value(key, value);
+          return HAMTNode {
+            presence_map: node.presence_map,
+            entries: new_entries
+          };
+        } else {
+          // TODO implement split
+          let mut new_entries = node.entries.to_vec();
+
+          new_entries[entries_index] = HAMTNodeEntry::Value(key, value);
+          return HAMTNode {
+            presence_map: node.presence_map,
+            entries: new_entries
+          };
+        }
+        
+      }
+      HAMTNodeEntry::Chained(vec) => {
+        let new_chain = set_chained(vec, key, value);
         let mut new_entries = node.entries.to_vec();
-        new_entries[entries_index] = HAMTNodeEntry::Value(value);
+        new_entries[entries_index] = HAMTNodeEntry::Chained(new_chain);
         return HAMTNode {
           presence_map: node.presence_map,
           entries: new_entries
@@ -53,7 +89,7 @@ fn set_node(node: &HAMTNode, cur_key: u64, value: i32) -> HAMTNode {
       }
       HAMTNodeEntry::Node(child_node) => {
         let new_key = cur_key << 5;
-        let new_node = set_node(child_node, new_key, value);
+        let new_node = set_node(child_node, key, new_key, value, level + 1);
         let mut new_entries = node.entries.to_vec();
         new_entries[entries_index] = HAMTNodeEntry::Node(Rc::new(new_node));
         return HAMTNode {
@@ -83,7 +119,7 @@ impl HAMT {
 
     let mut cur_node = &self.root;
     let mut cur_key = hashed_key;
-    loop {
+    'main: loop {
       // Get the 5 most significant bits of the key.
       // This will always be a number between 0 and 31.
       // We use this to index into the up to 32 entries of the node.
@@ -101,8 +137,15 @@ impl HAMT {
       // We can unwrap, as we are guaranteed that the length of the vector is at least the number of ones in the presence map.
       let entry = &cur_node.entries[entries_index];
       match entry {
-        HAMTNodeEntry::Value(v) => {
+        HAMTNodeEntry::Value(_, v) => {
           break Some(&v);
+        }
+        HAMTNodeEntry::Chained(vec) => {
+          for (k, v) in vec.iter() {
+            if k == &key {
+              break 'main Some(&v);
+            }
+          }
         }
         HAMTNodeEntry::Node(new_node) => {
           cur_node = &new_node;
@@ -117,7 +160,7 @@ impl HAMT {
     let hashed_key = hash_key(key);
     println!("key hash {} {}", key, hashed_key);
     HAMT {
-      root: set_node(&self.root, hashed_key, value)
+      root: set_node(&self.root, key, hashed_key, value, 0)
     }
   }
 
@@ -125,14 +168,25 @@ impl HAMT {
 
 // TODO for more speed, implement as union?
 // We can derive Clone automatically, as we are using Rc which supports clone.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum HAMTNodeEntry {
-  Value(i32),
-  Node(Rc<HAMTNode>)
+  // Key, value
+  Value(u64, i32),
+  Node(Rc<HAMTNode>),
+  Chained(Vec<(u64, i32)>)
 }
 
 struct HAMTNode {
   /// Test
   presence_map: u32,
   entries: Vec<HAMTNodeEntry>
+}
+
+impl fmt::Debug for HAMTNode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HAMTNode")
+        .field("presence_map", &format!("{:#b}", &self.presence_map))
+        .field("entries", &self.entries)
+        .finish()
+    }
 }
