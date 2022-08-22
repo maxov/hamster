@@ -1,0 +1,7 @@
+[tasks.build_report]
+command = "pandoc"
+args = ["report.md", "-o", "report.pdf"]
+
+[tasks.build_docs]
+command = "cargo"
+args = ["doc", "--document-private-items", "--open"]

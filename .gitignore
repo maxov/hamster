@@ -1,3 +1,6 @@
 /target
 Cargo.lock
 papers/
+
+report.pdf
+.vscode/
