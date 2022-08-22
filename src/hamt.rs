@@ -9,11 +9,11 @@ pub struct HAMT {
   root: HAMTNode
 }
 
-// This is the constant 0b11111 << 61.
-// Used to extract 5 most significant bits.
+/// This is the constant 0b11111 << 59.
+/// Used to extract 5 most significant bits from a u64.
 const MOST_SIG: u64 = 17870283321406128128;
 
-fn hash_key(key: u64) -> u64 {
+fn hash_key(key: &u64) -> u64 {
   let mut hasher = DefaultHasher::new();
   key.hash(&mut hasher);
   hasher.finish()
@@ -40,8 +40,69 @@ fn set_chained(vec: &Vec<(u64, i32)>, key: u64, value: i32) -> Vec<(u64, i32)> {
   return new_vec;
 }
 
-fn set_node(node: &HAMTNode, key: u64, cur_key: u64, value: i32, level: u32) -> HAMTNode {
-  let most_sig = ((cur_key & MOST_SIG) >> 59) as u32;
+fn get_height(node: &HAMTNode) -> u32 {
+  if node.presence_map == 0 {
+    0
+  } else {
+    let mut max_child_depth = 0;
+    for entry in node.entries.iter() {
+      let entry_depth = match entry {
+        HAMTNodeEntry::Value(_, _) => { 0 }
+        HAMTNodeEntry::Chained(_) => { 1 }
+        HAMTNodeEntry::Node(child_node) => { get_height(child_node) }
+      };
+      if entry_depth > max_child_depth {
+        max_child_depth = entry_depth;
+      }
+    }
+    max_child_depth + 1
+  }
+}
+
+///
+/// 
+/// 
+fn create_split_entry(key1: u64, hashed_key1: u64, val1: i32, key2: u64, hashed_key2: u64, val2: i32, level: u32) -> HAMTNodeEntry {
+  // If at the 13th level, there are no more bits in the keys to read.
+  // Then a new chain is created
+  if level == 13 {
+    let chained_vec = vec![
+      (key1, val1),
+      (key2, val2)
+    ];
+    return HAMTNodeEntry::Chained(
+      chained_vec
+    );
+  } else {
+    let key1_frag = ((hashed_key1 & MOST_SIG) >> 59) as u32;
+    let key2_frag = ((hashed_key2 & MOST_SIG) >> 59) as u32;
+    let node = 
+      if key1_frag == key2_frag {
+        // If the next fragments are still the same, then need to split even further
+        let next_split_entry = create_split_entry(
+          key1, hashed_key1 << 5, val1, 
+          key2, hashed_key2 << 5, val2, 
+          level + 1
+        );
+        HAMTNode {
+          presence_map: 1 << key1_frag,
+          entries: vec![next_split_entry]
+        }
+      } else {
+        let entries =
+          if key1_frag < key2_frag { vec![HAMTNodeEntry::Value(key1, val1), HAMTNodeEntry::Value(key2, val2)] }
+          else { vec![HAMTNodeEntry::Value(key2, val2), HAMTNodeEntry::Value(key1, val1)] };
+        HAMTNode {
+          presence_map: (1 << key1_frag) | (1 << key2_frag),
+          entries: entries
+        }
+      };
+    return HAMTNodeEntry::Node(Rc::new(node));
+  }
+}
+
+fn set_at_node(node: &HAMTNode, key: u64, cur_hashed_key: u64, value: i32, level: u32) -> HAMTNode {
+  let most_sig = ((cur_hashed_key & MOST_SIG) >> 59) as u32;
   let key_present = (node.presence_map >> most_sig) & 1;
   let entries_index = get_entries_index(node.presence_map, most_sig);
   if key_present == 0 {
@@ -67,16 +128,18 @@ fn set_node(node: &HAMTNode, key: u64, cur_key: u64, value: i32, level: u32) -> 
             entries: new_entries
           };
         } else {
-          // TODO implement split
           let mut new_entries = node.entries.to_vec();
-
-          new_entries[entries_index] = HAMTNodeEntry::Value(key, value);
+          let other_hashed_key = hash_key(other_key) << (5 * (level + 1));
+          new_entries[entries_index] = create_split_entry(
+            key, cur_hashed_key << 5, value, 
+            *other_key, other_hashed_key, *other_value,
+            level + 1
+          );
           return HAMTNode {
             presence_map: node.presence_map,
             entries: new_entries
           };
         }
-        
       }
       HAMTNodeEntry::Chained(vec) => {
         let new_chain = set_chained(vec, key, value);
@@ -88,8 +151,8 @@ fn set_node(node: &HAMTNode, key: u64, cur_key: u64, value: i32, level: u32) -> 
         };
       }
       HAMTNodeEntry::Node(child_node) => {
-        let new_key = cur_key << 5;
-        let new_node = set_node(child_node, key, new_key, value, level + 1);
+        let new_key = cur_hashed_key << 5;
+        let new_node = set_at_node(child_node, key, new_key, value, level + 1);
         let mut new_entries = node.entries.to_vec();
         new_entries[entries_index] = HAMTNodeEntry::Node(Rc::new(new_node));
         return HAMTNode {
@@ -115,7 +178,7 @@ impl HAMT {
 
   pub fn get(&self, key: u64) -> Option<&i32> {
     // Hash the key first.
-    let hashed_key = hash_key(key);
+    let hashed_key = hash_key(&key);
 
     let mut cur_node = &self.root;
     let mut cur_key = hashed_key;
@@ -157,16 +220,18 @@ impl HAMT {
   }
 
   pub fn set(&self, key: u64, value: i32) -> HAMT {
-    let hashed_key = hash_key(key);
-    println!("key hash {} {}", key, hashed_key);
+    let hashed_key = hash_key(&key);
     HAMT {
-      root: set_node(&self.root, key, hashed_key, value, 0)
+      root: set_at_node(&self.root, key, hashed_key, value, 0)
     }
+  }
+
+  pub fn height(&self) -> u32 {
+    get_height(&self.root)
   }
 
 }
 
-// TODO for more speed, implement as union?
 // We can derive Clone automatically, as we are using Rc which supports clone.
 #[derive(Clone, Debug)]
 enum HAMTNodeEntry {
@@ -177,7 +242,6 @@ enum HAMTNodeEntry {
 }
 
 struct HAMTNode {
-  /// Test
   presence_map: u32,
   entries: Vec<HAMTNodeEntry>
 }
