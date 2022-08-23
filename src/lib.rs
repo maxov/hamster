@@ -1,6 +1,5 @@
 pub mod hamt;
 
-
 #[cfg(test)]
 mod tests {
     use super::hamt::HAMT;

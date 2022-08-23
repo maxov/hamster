@@ -5,15 +5,15 @@ use std::rc::Rc;
 
 /// Implementation of a Hash Array Mapped Trie in Rust.
 #[derive(Debug)]
-pub struct HAMT {
-    root: Rc<HAMTNode>,
+pub struct HAMT<K, V> {
+    root: Rc<HAMTNode<K, V>>,
 }
 
 /// This is the constant 0b11111 << 59.
 /// Used to extract 5 most significant bits from a u64.
 const MOST_SIG: u64 = 17870283321406128128;
 
-fn hash_key(key: &u64) -> u64 {
+fn hash_key<K: Hash>(key: &K) -> u64 {
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
     hasher.finish()
@@ -27,12 +27,11 @@ fn get_entries_index(presence_map: u32, index: u32) -> usize {
     }
 }
 
-fn set_chained(vec: &Vec<(u64, i32)>, key: u64, value: i32) -> Vec<(u64, i32)> {
+fn set_chained<K: Eq + Clone, V: Clone>(vec: &Vec<(K, V)>, key: K, value: V) -> Vec<(K, V)> {
     let mut new_vec = vec.to_vec();
     for i in new_vec.iter_mut() {
-        let (k, v) = *i;
-        if k == key {
-            *i = (k, v);
+        if i.0 == key {
+            i.1 = value;
             return new_vec;
         }
     }
@@ -40,7 +39,7 @@ fn set_chained(vec: &Vec<(u64, i32)>, key: u64, value: i32) -> Vec<(u64, i32)> {
     return new_vec;
 }
 
-fn get_height(node: &HAMTNode) -> u32 {
+fn get_height<K, V>(node: &HAMTNode<K, V>) -> u32 {
     if node.presence_map == 0 {
         0
     } else {
@@ -62,15 +61,15 @@ fn get_height(node: &HAMTNode) -> u32 {
 ///
 ///
 ///
-fn create_split_entry(
-    key1: u64,
+fn create_split_entry<K: Clone, V: Clone>(
+    key1: K,
     hashed_key1: u64,
-    val1: i32,
-    key2: u64,
+    val1: V,
+    key2: K,
     hashed_key2: u64,
-    val2: i32,
+    val2: V,
     level: u32,
-) -> HAMTNodeEntry {
+) -> HAMTNodeEntry<K, V> {
     // If at the 13th level, there are no more bits in the keys to read.
     // Then a new chain is created
     if level == 13 {
@@ -115,7 +114,13 @@ fn create_split_entry(
     }
 }
 
-fn set_at_node(node: &HAMTNode, key: u64, cur_hashed_key: u64, value: i32, level: u32) -> HAMTNode {
+fn set_at_node<K: Hash + Eq + Clone, V: Clone>(
+    node: &HAMTNode<K, V>,
+    key: K,
+    cur_hashed_key: u64,
+    value: V,
+    level: u32,
+) -> HAMTNode<K, V> {
     let most_sig = ((cur_hashed_key & MOST_SIG) >> 59) as u32;
     let key_present = (node.presence_map >> most_sig) & 1;
     let entries_index = get_entries_index(node.presence_map, most_sig);
@@ -145,9 +150,9 @@ fn set_at_node(node: &HAMTNode, key: u64, cur_hashed_key: u64, value: i32, level
                         key,
                         cur_hashed_key << 5,
                         value,
-                        *other_key,
+                        other_key.clone(),
                         other_hashed_key,
-                        *other_value,
+                        other_value.clone(),
                         level + 1,
                     );
                     return HAMTNode {
@@ -167,9 +172,7 @@ fn set_at_node(node: &HAMTNode, key: u64, cur_hashed_key: u64, value: i32, level
             }
             HAMTNodeEntry::Node(child_node) => {
                 let new_key = cur_hashed_key << 5;
-                let new_node = set_at_node(
-                    child_node, key, new_key, value, level + 1
-                );
+                let new_node = set_at_node(child_node, key, new_key, value, level + 1);
                 let mut new_entries = node.entries.to_vec();
                 new_entries[entries_index] = HAMTNodeEntry::Node(Rc::new(new_node));
                 return HAMTNode {
@@ -181,13 +184,12 @@ fn set_at_node(node: &HAMTNode, key: u64, cur_hashed_key: u64, value: i32, level
     }
 }
 
-fn delete_at_node(
-    node: Rc<HAMTNode>,
-    key: u64,
+fn delete_at_node<K: Clone, V: Clone>(
+    node: Rc<HAMTNode<K, V>>,
+    key: K,
     cur_hashed_key: u64,
-    value: i32,
     level: u32,
-) -> Rc<HAMTNode> {
+) -> Rc<HAMTNode<K, V>> {
     let most_sig = ((cur_hashed_key & MOST_SIG) >> 59) as u32;
     let key_present = (node.presence_map >> most_sig) & 1;
     let entries_index = get_entries_index(node.presence_map, most_sig);
@@ -203,7 +205,7 @@ fn delete_at_node(
     }
 }
 
-impl HAMT {
+impl<K, V> HAMT<K, V> {
     /// Construct a new HAMT.
     pub fn new() -> Self {
         let root_node = HAMTNode {
@@ -215,7 +217,16 @@ impl HAMT {
         }
     }
 
-    pub fn get(&self, key: u64) -> Option<&i32> {
+    pub fn height(&self) -> u32 {
+        get_height(&self.root)
+    }
+}
+
+impl<K, V> HAMT<K, V>
+where
+    K: Eq + Hash,
+{
+    pub fn get(&self, key: K) -> Option<&V> {
         // Hash the key first.
         let hashed_key = hash_key(&key);
 
@@ -236,7 +247,7 @@ impl HAMT {
             }
             // Count the number of present entries before this.
             // This will be the index in the entries array.
-            // We assume we don't lose anything casting to usize, 
+            // We assume we don't lose anything casting to usize,
             // i.e. that usize is at least 5 bits.
             let entries_index = get_entries_index(cur_node.presence_map, most_sig);
             // We can unwrap, as we are guaranteed that the length of the vector
@@ -261,46 +272,44 @@ impl HAMT {
             }
         }
     }
+}
 
-    pub fn set(&self, key: u64, value: i32) -> HAMT {
+impl<K, V> HAMT<K, V>
+where
+    K: Eq + Hash + Clone,
+    V: Clone
+{
+    pub fn set(&self, key: K, value: V) -> HAMT<K, V> {
         let hashed_key = hash_key(&key);
-        let new_root = set_at_node(
-            &self.root, key, hashed_key, value, 0
-        );
+        let new_root = set_at_node(&self.root, key, hashed_key, value, 0);
         HAMT {
             root: Rc::new(new_root),
         }
     }
 
-    pub fn delete(&self, key: u64, value: i32) -> HAMT {
+    pub fn delete(&self, key: K) -> HAMT<K, V> {
         let hashed_key = hash_key(&key);
-        let new_root = delete_at_node(
-            Rc::clone(&self.root), key, hashed_key, value, 0
-        );
+        let new_root = delete_at_node(Rc::clone(&self.root), key, hashed_key, 0);
         HAMT { root: new_root }
-    }
-
-    pub fn height(&self) -> u32 {
-        get_height(&self.root)
     }
 }
 
 // We can derive Clone automatically, as we are using Rc which supports clone.
 #[derive(Clone, Debug)]
-enum HAMTNodeEntry {
+enum HAMTNodeEntry<K, V> {
     // Key, value
-    Value(u64, i32),
-    Node(Rc<HAMTNode>),
-    Chained(Vec<(u64, i32)>),
+    Value(K, V),
+    Node(Rc<HAMTNode<K, V>>),
+    Chained(Vec<(K, V)>),
 }
 
 /// An internal node of a [`HAMT`](HAMT).
-struct HAMTNode {
+struct HAMTNode<K, V> {
     presence_map: u32,
-    entries: Vec<HAMTNodeEntry>,
+    entries: Vec<HAMTNodeEntry<K, V>>,
 }
 
-impl fmt::Debug for HAMTNode {
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for HAMTNode<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HAMTNode")
             .field("presence_map", &format!("{:#b}", &self.presence_map))

@@ -5,3 +5,10 @@ authors = ["Max Ovsiankin"]
 edition = "2018"
 
 [dependencies]
+
+[dev-dependencies]
+criterion = "0.3"
+
+[[bench]]
+name = "my_benchmark"
+harness = false
