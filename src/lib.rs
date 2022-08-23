@@ -261,7 +261,6 @@ fn remove_at_node<K: Eq + Clone, V: Clone>(
                 }
             }
         };
-        assert_eq!(ret_node.presence_map.count_ones() as usize, ret_node.entries.len());
         ret_node
     }
 }
