@@ -254,12 +254,16 @@ where
             // is at least the number of ones in the presence map.
             let entry = &cur_node.entries[entries_index];
             match entry {
-                HAMTNodeEntry::Value(_, v) => {
-                    break Some(&v);
+                HAMTNodeEntry::Value(k, v) => {
+                    if *k == key {
+                        break Some(&v);
+                    } else {
+                        break None;
+                    }
                 }
                 HAMTNodeEntry::Chained(vec) => {
-                    for (k, v) in vec.iter() {
-                        if k == &key {
+                    for (k, v) in vec {
+                        if *k == key {
                             break 'main Some(&v);
                         }
                     }
@@ -272,6 +276,38 @@ where
             }
         }
     }
+
+    pub fn contains_key(&self, key: K) -> bool {
+        let hashed_key = hash_key(&key);
+        let mut cur_node = &self.root;
+        let mut cur_key = hashed_key;
+        'main: loop {
+            let most_sig = ((cur_key & MOST_SIG) >> 59) as u32;
+
+            let key_present = (cur_node.presence_map >> most_sig) & 1;
+            if key_present == 0 {
+                break false;
+            }
+            let entries_index = get_entries_index(cur_node.presence_map, most_sig);
+            let entry = &cur_node.entries[entries_index];
+            match entry {
+                HAMTNodeEntry::Value(k, _) => {
+                    break *k == key;
+                }
+                HAMTNodeEntry::Chained(vec) => {
+                    for (k, v) in vec {
+                        if *k == key {
+                            break 'main true;
+                        }
+                    }
+                }
+                HAMTNodeEntry::Node(next_node) => {
+                    cur_node = &next_node;
+                    cur_key = cur_key << 5;
+                }
+            }
+        }
+    }
 }
 
 impl<K, V> HAMT<K, V>
@@ -279,7 +315,6 @@ where
     K: Eq + Hash + Clone,
     V: Clone
 {
-
     pub fn from<const N: usize>(items: [(K, V); N]) -> Self {
         let mut map = Self::new();
         for (k, v) in items {
@@ -332,17 +367,55 @@ impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for HAMTNode<K, V> {
 mod tests {
     use crate::HAMT;
 
-    #[test]
-    fn set_then_get() {
+    fn setup_big_map() -> (i32, HAMT<i32, i32>) {
         let num_keys = 10000;
-
         let mut map = HAMT::new();
         for k in 1..num_keys {
             map = map.insert(k, -k);
         }
-        for k in 1..num_keys {
+        (num_keys, map)
+    }
+
+    #[test]
+    fn set_then_get() {
+        let (N, map) = setup_big_map();
+        
+        for k in 1..N {
             let val = map.get(k).unwrap();
             assert_eq!(*val, -k);
         }
+    }
+
+    #[test]
+    fn from() {
+        let map = HAMT::from([
+            ("a", 1),
+            ("b", 2)
+        ]);
+        assert_eq!(*map.get("a").unwrap(), 1);
+        assert_eq!(*map.get("b").unwrap(), 2);
+        assert_eq!(map.get("c"), None);
+    }
+
+    #[test]
+    fn contains_key() {
+        let map = HAMT::from([
+            ("a", 1),
+            ("b", 2)
+        ]);
+        assert!(map.contains_key("a"));
+        assert!(map.contains_key("b"));
+        assert!(!map.contains_key("c"));
+    }
+
+    #[test]
+    fn big_contains_key() {
+        let (N, map) = setup_big_map();
+        for k in 1..N {
+            assert!(map.contains_key(k));
+        }
+        assert!(!map.contains_key(0));
+        assert!(!map.contains_key(-1));
+        assert!(!map.contains_key(N+1));
     }
 }

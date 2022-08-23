@@ -33,6 +33,9 @@ Benchmarks can be run - how?
 # Implementation details
 
 # Potential future improvements
+This implementation of HAMTs is usable, but by no means complete.
+The following are some potential improvements to the datastructure:
+
 - The current implementation uses Rust's `Rc` for reference counting and is thus not thread-safe. Perhaps the implementation can allow for `Rc` or `Arc`
 as the 'reference counted type'. Other libraries for immutable datastructures in Rust simply use `Arc` everywhere, though this comes with a cost
 in performance as all operations `Arc` does are implemented atomically.
@@ -46,6 +49,9 @@ The current implementation instantiates a new `Hasher` each time it needs to has
 When they are modified, they copy the entire vector.
 Certainly for `HAMTNodeEntry::Chained`, and perhaps for `HAMTNode`, it would be more performant to use an immutable List.
 This avoids copying the entire vector, saving time and memory.
+- Methods like `HAMT::from` require `K` and `V` to both implement `Clone`, due to using things like `insert` which require it.
+Because `from` is guaranteed ownership of the values it is given, and all intermediary maps created during `inserts` are
+only in the scope of `from`, `Clone` should not be necessary here.
 
 # References
 [Bag01] Phil Bagwell. *Ideal hash trees.* 2001. <http://lampwww.epfl.ch/papers/idealhashtrees.pdf>
