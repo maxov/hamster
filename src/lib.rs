@@ -184,11 +184,10 @@ fn insert_at_node<K: Hash + Eq + Clone, V: Clone>(
     }
 }
 
-fn remove_at_node<K: Clone, V: Clone>(
+fn remove_at_node<K: Eq + Clone, V: Clone>(
     node: Rc<HAMTNode<K, V>>,
     key: K,
-    cur_hashed_key: u64,
-    level: u32,
+    cur_hashed_key: u64
 ) -> Rc<HAMTNode<K, V>> {
     let most_sig = ((cur_hashed_key & MOST_SIG) >> 59) as u32;
     let key_present = (node.presence_map >> most_sig) & 1;
@@ -197,11 +196,73 @@ fn remove_at_node<K: Clone, V: Clone>(
         // If the key is not present at this level, return the node
         node
     } else {
-        let new_node = HAMTNode {
-            presence_map: 0,
-            entries: Vec::new(),
+        let entry = &node.entries[entries_index];
+        let ret_node = match entry {
+            HAMTNodeEntry::Chained(vec) => {
+                let mut new_chain = vec.to_vec();
+                let mut new_entries = node.entries.to_vec();
+                let loc = new_chain.iter().position(|(k, _)| *k == key);
+                match loc {
+                    Some(i) => {
+                        new_chain.remove(i);
+                        if new_chain.len() == 0 {
+                            new_entries.remove(entries_index);
+                            let node = HAMTNode {
+                                presence_map: node.presence_map ^ (1 << most_sig),
+                                entries: new_entries
+                            };
+                            Rc::new(node)
+                        } else {
+                            new_entries[entries_index] = HAMTNodeEntry::Chained(new_chain);
+                            let node = HAMTNode {
+                                presence_map: node.presence_map,
+                                entries: new_entries
+                            };
+                            Rc::new(node)
+                        }
+                    }
+                    None => {
+                        node
+                    }
+                }
+            }
+            HAMTNodeEntry::Node(next_node) => {
+                let new_node = remove_at_node(
+                    Rc::clone(next_node), key, cur_hashed_key << 5
+                );
+                let mut new_entries = node.entries.to_vec();
+                if new_node.presence_map == 0 {
+                    new_entries.remove(entries_index);
+                    let node = HAMTNode {
+                        presence_map: node.presence_map ^ (1 << most_sig),
+                        entries: new_entries
+                    };
+                    Rc::new(node)
+                } else {
+                    new_entries[entries_index] = HAMTNodeEntry::Node(new_node);
+                    let node = HAMTNode {
+                        presence_map: node.presence_map,
+                        entries: new_entries
+                    };
+                    Rc::new(node)
+                }
+            }
+            HAMTNodeEntry::Value(k, _) => {
+                if *k == key {
+                    let mut new_entries = node.entries.to_vec();
+                    new_entries.remove(entries_index);
+                    let node = HAMTNode {
+                        presence_map: node.presence_map ^ (1 << most_sig),
+                        entries: new_entries
+                    };
+                    Rc::new(node)
+                } else {
+                    node
+                }
+            }
         };
-        Rc::new(new_node)
+        assert_eq!(ret_node.presence_map.count_ones() as usize, ret_node.entries.len());
+        ret_node
     }
 }
 
@@ -295,7 +356,7 @@ where
                     break *k == key;
                 }
                 HAMTNodeEntry::Chained(vec) => {
-                    for (k, v) in vec {
+                    for (k, _) in vec {
                         if *k == key {
                             break 'main true;
                         }
@@ -333,7 +394,7 @@ where
 
     pub fn remove(&self, key: K) -> HAMT<K, V> {
         let hashed_key = hash_key(&key);
-        let new_root = remove_at_node(Rc::clone(&self.root), key, hashed_key, 0);
+        let new_root = remove_at_node(Rc::clone(&self.root), key, hashed_key);
         HAMT { root: new_root }
     }
 }
@@ -378,9 +439,9 @@ mod tests {
 
     #[test]
     fn set_then_get() {
-        let (N, map) = setup_big_map();
+        let (n, map) = setup_big_map();
         
-        for k in 1..N {
+        for k in 1..n {
             let val = map.get(k).unwrap();
             assert_eq!(*val, -k);
         }
@@ -410,12 +471,27 @@ mod tests {
 
     #[test]
     fn big_contains_key() {
-        let (N, map) = setup_big_map();
-        for k in 1..N {
+        let (n, map) = setup_big_map();
+        for k in 1..n {
             assert!(map.contains_key(k));
         }
         assert!(!map.contains_key(0));
         assert!(!map.contains_key(-1));
-        assert!(!map.contains_key(N+1));
+        assert!(!map.contains_key(n+1));
     }
+
+    #[test]
+    fn big_remove() {
+        let (n, mut map) = setup_big_map();
+        for k in (1..n).step_by(2) {
+            map = map.remove(k);
+        }
+        for k in (1..n).step_by(2) {
+            assert!(!map.contains_key(k));
+        }
+        for k in (2..n).step_by(2) {
+            assert!(map.contains_key(k));
+        }
+    }
+
 }
