@@ -3,15 +3,30 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
+/// This is the constant 0b11111 << 59.
+/// Used to extract 5 most significant bits from a u64.
+const MOST_SIG: u64 = 17870283321406128128;
+
 /// Implementation of a Hash Array Mapped Trie in Rust.
 #[derive(Debug)]
 pub struct HAMT<K, V> {
     root: Rc<HAMTNode<K, V>>,
 }
 
-/// This is the constant 0b11111 << 59.
-/// Used to extract 5 most significant bits from a u64.
-const MOST_SIG: u64 = 17870283321406128128;
+// We can derive Clone automatically, as we are using Rc which supports clone.
+#[derive(Clone, Debug)]
+enum HAMTNodeEntry<K, V> {
+    // Key, value
+    Value(K, V),
+    Node(Rc<HAMTNode<K, V>>),
+    Chained(Vec<(K, V)>),
+}
+
+/// An internal node of a [`HAMT`](HAMT).
+struct HAMTNode<K, V> {
+    presence_map: u32,
+    entries: Vec<HAMTNodeEntry<K, V>>,
+}
 
 fn hash_key<K: Hash>(key: &K) -> u64 {
     let mut hasher = DefaultHasher::new();
@@ -398,27 +413,24 @@ where
     }
 }
 
-// We can derive Clone automatically, as we are using Rc which supports clone.
-#[derive(Clone, Debug)]
-enum HAMTNodeEntry<K, V> {
-    // Key, value
-    Value(K, V),
-    Node(Rc<HAMTNode<K, V>>),
-    Chained(Vec<(K, V)>),
-}
-
-/// An internal node of a [`HAMT`](HAMT).
-struct HAMTNode<K, V> {
-    presence_map: u32,
-    entries: Vec<HAMTNodeEntry<K, V>>,
-}
-
 impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for HAMTNode<K, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HAMTNode")
             .field("presence_map", &format!("{:#b}", &self.presence_map))
             .field("entries", &self.entries)
             .finish()
+    }
+}
+
+impl<K, V> Clone for HAMT<K, V>
+where
+    K: Clone,
+    V: Clone
+{
+    fn clone(&self) -> Self {
+        Self {
+            root: Rc::clone(&self.root)
+        }
     }
 }
 
@@ -443,6 +455,20 @@ mod tests {
         for k in 1..n {
             let val = map.get(k).unwrap();
             assert_eq!(*val, -k);
+        }
+    }
+
+    #[test]
+    fn set_immutability() {
+        let (n, map) = setup_big_map();
+
+        let mut map2 = map.clone();
+        for k in n..(2*n) {
+            map2 = map2.insert(k, -k);
+        }
+        for k in n..(2*n) {
+            assert!(!map.contains_key(k));
+            assert!(map2.contains_key(k));
         }
     }
 
@@ -490,6 +516,24 @@ mod tests {
         }
         for k in (2..n).step_by(2) {
             assert!(map.contains_key(k));
+        }
+    }
+
+    #[test]
+    fn remove_immutability() {
+        let (n, map) = setup_big_map();
+
+        let mut map2 = map.clone();
+        for k in n..(2*n) {
+            map2 = map2.insert(k, -k);
+        }
+        for k in (1..n).step_by(2) {
+            map2 = map2.remove(k);
+        }
+
+        for k in (1..n).step_by(2) {
+            assert!(map.contains_key(k));
+            assert!(!map2.contains_key(k));
         }
     }
 
