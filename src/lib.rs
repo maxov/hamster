@@ -28,12 +28,15 @@ struct HAMTNode<K, V> {
     entries: Vec<HAMTNodeEntry<K, V>>,
 }
 
+/// Hash the given key using the rust `DefaultHasher`.
 fn hash_key<K: Hash>(key: &K) -> u64 {
     let mut hasher = DefaultHasher::new();
     key.hash(&mut hasher);
     hasher.finish()
 }
 
+/// Given a 'presence map', and an index between 0 and 31 (inclusive), 
+/// compute what location the index will be in the entries vector.
 fn get_entries_index(presence_map: u32, index: u32) -> usize {
     if index == 0 {
         0
@@ -42,6 +45,7 @@ fn get_entries_index(presence_map: u32, index: u32) -> usize {
     }
 }
 
+/// Insert an entry into a vector chain. This will replace the existing value for that key, if one exists.
 fn insert_chained<K: Eq + Clone, V: Clone>(vec: &Vec<(K, V)>, key: K, value: V) -> Vec<(K, V)> {
     let mut new_vec = vec.to_vec();
     for i in new_vec.iter_mut() {
@@ -54,6 +58,7 @@ fn insert_chained<K: Eq + Clone, V: Clone>(vec: &Vec<(K, V)>, key: K, value: V) 
     return new_vec;
 }
 
+/// Get the height of the subtree
 fn get_height<K, V>(node: &HAMTNode<K, V>) -> u32 {
     if node.presence_map == 0 {
         0
@@ -73,9 +78,14 @@ fn get_height<K, V>(node: &HAMTNode<K, V>) -> u32 {
     }
 }
 
-///
-///
-///
+/// This is a key method: if called, there are conflicting hashed keys that need to be inserted
+/// at the current level. If the conflict occurs at the 12th level or lower,
+/// then the entry can point to a new node, which is constructed manually (we can predict what the new
+/// lower node can look like because we know both keys that it should store).
+/// If we are at the 13th level, then the data structure produces a chain instead.
+/// 
+/// Note that this can happen recursively, if the hashes of the keys share a prefix with more than 5 bits
+/// starting at the current level.
 fn create_split_entry<K, V>(
     key1: K,
     hashed_key1: u64,
@@ -109,6 +119,7 @@ fn create_split_entry<K, V>(
                 entries: vec![next_split_entry],
             }
         } else {
+            // Otherwise, create the node with only these two keys
             let entries = if key1_frag < key2_frag {
                 vec![
                     HAMTNodeEntry::Value(key1, val1),
@@ -129,6 +140,8 @@ fn create_split_entry<K, V>(
     }
 }
 
+/// Main method implementing insert at the current node.
+/// Level keeps track of how deep in the tree we are.
 fn insert_at_node<K: Hash + Eq + Clone, V: Clone>(
     node: &HAMTNode<K, V>,
     key: K,
@@ -139,7 +152,10 @@ fn insert_at_node<K: Hash + Eq + Clone, V: Clone>(
     let most_sig = ((cur_hashed_key & MOST_SIG) >> 59) as u32;
     let key_present = (node.presence_map >> most_sig) & 1;
     let entries_index = get_entries_index(node.presence_map, most_sig);
+    // Check if there is a key present in the node whose 5 most significant bits conflict withe current key's.
     if key_present == 0 {
+        // If the key is not present in the node, then the insert is more straightforward.
+        // Copy the entries, insert the key and update the presence map.
         let mut new_entries = node.entries.to_vec();
 
         new_entries.insert(entries_index, HAMTNodeEntry::Value(key, value));
@@ -148,10 +164,14 @@ fn insert_at_node<K: Hash + Eq + Clone, V: Clone>(
             entries: new_entries,
         };
     } else {
+        // If there is a conflicting key present, then we need to figure out how to update things
+        // depending on the entry for that key prefix.
         let entry = &node.entries[entries_index];
         match entry {
             HAMTNodeEntry::Value(other_key, other_value) => {
+                // If there is a value in the entry
                 if other_key == &key {
+                    // If it is for the same key, then just replace the value
                     let mut new_entries = node.entries.to_vec();
                     new_entries[entries_index] = HAMTNodeEntry::Value(key, value);
                     return HAMTNode {
@@ -159,6 +179,7 @@ fn insert_at_node<K: Hash + Eq + Clone, V: Clone>(
                         entries: new_entries,
                     };
                 } else {
+                    // Otherwise, we need to split this entry.
                     let mut new_entries = node.entries.to_vec();
                     let other_hashed_key = hash_key(other_key) << (5 * (level + 1));
                     new_entries[entries_index] = create_split_entry(
@@ -177,6 +198,7 @@ fn insert_at_node<K: Hash + Eq + Clone, V: Clone>(
                 }
             }
             HAMTNodeEntry::Chained(vec) => {
+                // In a chain, we insert the key into the chain (replacing the existing value for that key if needed)
                 let new_chain = insert_chained(vec, key, value);
                 let mut new_entries = node.entries.to_vec();
                 new_entries[entries_index] = HAMTNodeEntry::Chained(new_chain);
@@ -186,6 +208,7 @@ fn insert_at_node<K: Hash + Eq + Clone, V: Clone>(
                 };
             }
             HAMTNodeEntry::Node(child_node) => {
+                // If the entry points to another node, then we need to insert within that node.
                 let new_key = cur_hashed_key << 5;
                 let new_node = insert_at_node(child_node, key, new_key, value, level + 1);
                 let mut new_entries = node.entries.to_vec();
@@ -199,6 +222,7 @@ fn insert_at_node<K: Hash + Eq + Clone, V: Clone>(
     }
 }
 
+/// Remove the given key at the node.
 fn remove_at_node<K: Eq + Clone, V: Clone>(
     node: Rc<HAMTNode<K, V>>,
     key: K,
@@ -208,19 +232,25 @@ fn remove_at_node<K: Eq + Clone, V: Clone>(
     let key_present = (node.presence_map >> most_sig) & 1;
     let entries_index = get_entries_index(node.presence_map, most_sig);
     if key_present == 0 {
-        // If the key is not present at this level, return the node
+        // If the key is not present at this level, we need to do nothing, so return the node
         node
     } else {
         let entry = &node.entries[entries_index];
+        // Like the insert, what we need to do if the key's prefix is present depends on the entry for that
+        // prefix
         let ret_node = match entry {
             HAMTNodeEntry::Chained(vec) => {
+                // If it is a chain, then go through the chain and remove the key if it exists.
                 let mut new_chain = vec.to_vec();
                 let mut new_entries = node.entries.to_vec();
                 let loc = new_chain.iter().position(|(k, _)| *k == key);
                 match loc {
                     Some(i) => {
-                        new_chain.remove(i);
+                        new_chain.remove(i);                       
                         if new_chain.len() == 0 {
+                            // One special case: if the chain is now empty after removing the key,
+                            // then the containing node can be updated to remove the entry pointing to
+                            // that chain.
                             new_entries.remove(entries_index);
                             let node = HAMTNode {
                                 presence_map: node.presence_map ^ (1 << most_sig),
@@ -242,11 +272,13 @@ fn remove_at_node<K: Eq + Clone, V: Clone>(
                 }
             }
             HAMTNodeEntry::Node(next_node) => {
+                // If it is a node, then recurse through removing the node
                 let new_node = remove_at_node(
                     Rc::clone(next_node), key, cur_hashed_key << 5
                 );
                 let mut new_entries = node.entries.to_vec();
                 if new_node.presence_map == 0 {
+                    // Also clean up the node from its parent's presence map if the node is entry.
                     new_entries.remove(entries_index);
                     let node = HAMTNode {
                         presence_map: node.presence_map ^ (1 << most_sig),
@@ -263,7 +295,9 @@ fn remove_at_node<K: Eq + Clone, V: Clone>(
                 }
             }
             HAMTNodeEntry::Value(k, _) => {
+                // If the entry is a value, this is the most direct case.
                 if *k == key {
+                    // If the key matches, then remove the entry.
                     let mut new_entries = node.entries.to_vec();
                     new_entries.remove(entries_index);
                     let node = HAMTNode {
@@ -292,6 +326,7 @@ impl<K, V> HAMT<K, V> {
         }
     }
 
+    // Get the height of the HAMT.
     pub fn height(&self) -> u32 {
         get_height(&self.root)
     }
@@ -301,6 +336,7 @@ impl<K, V> HAMT<K, V>
 where
     K: Eq + Hash,
 {
+    /// Get the value stored at key if it exists, otherwise return `None`.
     pub fn get(&self, key: K) -> Option<&V> {
         // Hash the key first.
         let hashed_key = hash_key(&key);
@@ -352,10 +388,13 @@ where
         }
     }
 
+    /// Check if the HAMT contains the given key, and return `true` if so and `false` if not.
     pub fn contains_key(&self, key: K) -> bool {
         let hashed_key = hash_key(&key);
         let mut cur_node = &self.root;
         let mut cur_key = hashed_key;
+        // The main body of this is very similar to `get`, only we just finish when we find
+        // a matching key.
         'main: loop {
             let most_sig = ((cur_key & MOST_SIG) >> 59) as u32;
 
@@ -390,6 +429,7 @@ where
     K: Eq + Hash + Clone,
     V: Clone
 {
+    /// Create a HAMT from the given array of pairs.
     pub fn from<const N: usize>(items: [(K, V); N]) -> Self {
         let mut map = Self::new();
         for (k, v) in items {
@@ -398,6 +438,8 @@ where
         map
     }
 
+    /// Insert the given key and value in to the map.
+    /// Return a new HAMT, with the existing one unaffected.
     pub fn insert(&self, key: K, value: V) -> HAMT<K, V> {
         let hashed_key = hash_key(&key);
         let new_root = insert_at_node(&self.root, key, hashed_key, value, 0);
@@ -406,6 +448,8 @@ where
         }
     }
 
+    /// Remove the given key from the map, if it is present.
+    /// Return a HAMT, with the existing one unaffected.
     pub fn remove(&self, key: K) -> HAMT<K, V> {
         let hashed_key = hash_key(&key);
         let new_root = remove_at_node(Rc::clone(&self.root), key, hashed_key);
