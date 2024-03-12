@@ -130,8 +130,8 @@ the presence map is checked to calculate what position that entry will have in t
 This is implemented in the `get_entries_index` method by using bitwise operations to keep only the part of the
 presence map that stores the presence of the entries whose index is smaller than the desired index,
 then counting the number of ones.
-To implement `count_ones`, ust uses LLVM's [`ctpop` intrinsic](https://releases.llvm.org/3.2/docs/LangRef.html#int_ctpop), which
-decodes to a single assembly instruction on supported platforms. [Bag01] mentions this as one reason why HAMTs can be performant.
+To implement `count_ones`, Rust uses LLVM's [`ctpop` intrinsic](https://releases.llvm.org/3.2/docs/LangRef.html#int_ctpop), which
+decodes to a single assembly instruction on supported platforms. [Bag01] mentions this as one reason why HAMTs can be especially performant compared to other immutable maps.
 
 The writable methods `insert` and `remove` maintain this presence map in the natural way:
 if an empty entry in the current internal node becomes inhabited, the presence for that entry is updated to 1;
